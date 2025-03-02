@@ -1,126 +1,190 @@
-// CSV Reader for the XOX Wallet NDC Campaign Chatbot
-// This script will read a CSV file containing customer campaign data
+// Enhanced Chatbot for XOX Wallet NDC Campaign
+// Integrates with backend API for LLM responses and SQLite database queries
 
-// Function to read and process CSV file
-async function loadCustomerData() {
-    try {
-        // Fetch the CSV file (in production this would be your latest campaign data)
-        const response = await fetch('data/ndc_campaign_data.csv');
-        const csvText = await response.text();
-        
-        // Parse CSV data
-        const customerData = parseCsvData(csvText);
-        return customerData;
-    } catch (error) {
-        console.error('Error loading customer data:', error);
-        return {};
-    }
-}
+// Configuration
+const API_ENDPOINT = window.location.hostname === 'localhost' 
+  ? 'http://localhost:3000/api'
+  : 'https://api.xoxwallet.com/api'; // Replace with your actual API endpoint in production
 
-// Parse CSV into a usable format
-function parseCsvData(csvText) {
-    // Simple CSV parsing (in production, consider using a library like PapaParse)
-    const lines = csvText.split('\n');
-    const headers = lines[0].split(',');
-    
-    const customerData = {};
-    
-    for (let i = 1; i < lines.length; i++) {
-        if (!lines[i].trim()) continue;
-        
-        const values = lines[i].split(',');
-        const customer = {};
-        
-        for (let j = 0; j < headers.length; j++) {
-            const key = headers[j].trim();
-            const value = values[j] ? values[j].trim() : '';
-            customer[key] = value;
-        }
-        
-        // Use walletId as the key for quick lookup
-        if (customer.walletId) {
-            customerData[customer.walletId] = customer;
-        }
-    }
-    
-    return customerData;
-}
+// DOM Elements
+let chatbotContainer;
+let chatbotMessages;
+let chatbotInput;
+let chatbotSend;
+let chatIcon;
+let chatbotClose;
 
-// Calculate customer's current tier based on consecutive months
-function calculateTier(consecutiveMonths) {
-    if (consecutiveMonths >= 3) {
-        return '5%';
-    } else if (consecutiveMonths === 2) {
-        return '3.3%';
-    } else {
-        return '1.7%';
-    }
-}
+// State
+let currentWalletId = null;
 
-// Format customer data for display
-function formatCustomerStatus(customer) {
-    const currentTier = calculateTier(parseInt(customer.consecutiveMonths));
-    const nextTier = currentTier === '5%' ? 'Maximum tier reached' : 
-                    currentTier === '3.3%' ? '5%' : '3.3%';
-    
-    return {
-        name: customer.name,
-        walletId: customer.walletId,
-        consecutiveMonths: parseInt(customer.consecutiveMonths),
-        currentTier: currentTier,
-        nextTier: nextTier,
-        currentMonthSpend: parseFloat(customer.currentMonthSpend),
-        totalCashbackEarned: parseFloat(customer.totalCashbackEarned),
-        lastTransaction: customer.lastTransaction
-    };
-}
+// Initialize when DOM is loaded
+document.addEventListener('DOMContentLoaded', initChatbot);
 
-// Generate a response based on the customer data and query
-function generateResponse(customer, query) {
-    const formattedCustomer = formatCustomerStatus(customer);
-    
-    // Basic status response
-    let response = `Hello ${formattedCustomer.name}! Here's your NDC Campaign status:\n\n`;
-    response += `Current Tier: ${formattedCustomer.currentTier} cashback\n`;
-    response += `Consecutive Months: ${formattedCustomer.consecutiveMonths}\n`;
-    response += `Current Month Spend: RM${formattedCustomer.currentMonthSpend.toFixed(2)}\n`;
-    response += `Total Cashback Earned: RM${formattedCustomer.totalCashbackEarned.toFixed(2)}\n`;
-    response += `Last Transaction: ${formattedCustomer.lastTransaction}\n\n`;
-    
-    // Check if specific information was requested
-    if (query.toLowerCase().includes('tier')) {
-        response += `Your current tier is ${formattedCustomer.currentTier} cashback. `;
-        if (formattedCustomer.nextTier !== 'Maximum tier reached') {
-            response += `Continue for ${3 - formattedCustomer.consecutiveMonths} more month(s) to reach ${formattedCustomer.nextTier} cashback!`;
-        } else {
-            response += `Congratulations! You've reached the maximum tier.`;
-        }
-    } else if (query.toLowerCase().includes('spend') || query.toLowerCase().includes('transaction')) {
-        response += `This month, you've spent RM${formattedCustomer.currentMonthSpend.toFixed(2)}. Remember, you need to spend at least RM30 in a single transaction each month to qualify for cashback.`;
-    } else if (query.toLowerCase().includes('cashback') || query.toLowerCase().includes('earn')) {
-        response += `You've earned a total of RM${formattedCustomer.totalCashbackEarned.toFixed(2)} in cashback so far. At your current tier (${formattedCustomer.currentTier}), your next qualifying transaction will earn you ${formattedCustomer.currentTier} of the transaction value (up to RM50).`;
-    } else {
-        // Default additional info
-        if (formattedCustomer.nextTier !== 'Maximum tier reached') {
-            response += `Continue using your XOX Wallet this month to maintain your streak and reach ${formattedCustomer.nextTier} cashback!`;
-        } else {
-            response += `Congratulations! You've reached the maximum tier. Keep using your XOX Wallet to maintain your 5% cashback!`;
-        }
-    }
-    
-    return response;
-}
-
-// Export functions for use in the main chatbot interface
 function initChatbot() {
-    console.log('NDC Campaign Chatbot initialized');
-    // You can add initialization logic here if needed
-    
-    // In a production environment, you would load the customer data from CSV here
-    // loadCustomerData().then(data => {
-    //     window.customerData = data;
-    // });
+  console.log('NDC Campaign Chatbot initializing...');
+  
+  // Get DOM elements
+  chatbotContainer = document.getElementById('chatbot-container');
+  chatbotMessages = document.getElementById('chatbot-messages');
+  chatbotInput = document.getElementById('chatbot-input');
+  chatbotSend = document.getElementById('chatbot-send');
+  chatIcon = document.getElementById('chat-icon');
+  chatbotClose = document.getElementById('chatbot-close');
+  
+  if (!chatbotContainer || !chatbotMessages || !chatbotInput || !chatbotSend || !chatIcon || !chatbotClose) {
+    console.error('Chatbot elements not found in DOM');
+    return;
+  }
+  
+  // Add event listeners
+  chatIcon.addEventListener('click', openChatbot);
+  chatbotClose.addEventListener('click', closeChatbot);
+  chatbotSend.addEventListener('click', sendMessage);
+  chatbotInput.addEventListener('keypress', handleKeyPress);
+  
+  console.log('NDC Campaign Chatbot initialized');
 }
 
-// Initialize when the script loads
-initChatbot();
+// Open chatbot and display welcome message
+function openChatbot() {
+  chatbotContainer.style.display = 'flex';
+  chatIcon.style.display = 'none';
+  
+  // Add welcome message if it's empty
+  if (chatbotMessages.children.length === 0) {
+    addBotMessage("👋 Hi there! I'm your NDC Campaign Assistant. I can help you check your cashback status, explain campaign rules, and more. What would you like to know?");
+    addBotMessage("To check your status, please provide your XOX Wallet ID.");
+  }
+}
+
+// Close chatbot
+function closeChatbot() {
+  chatbotContainer.style.display = 'none';
+  chatIcon.style.display = 'flex';
+}
+
+// Handle Enter key press
+function handleKeyPress(e) {
+  if (e.key === 'Enter') {
+    sendMessage();
+  }
+}
+
+// Send user message to chatbot
+function sendMessage() {
+  const message = chatbotInput.value.trim();
+  if (message === '') return;
+  
+  // Add user message to chat
+  addUserMessage(message);
+  chatbotInput.value = '';
+  
+  // Check if message is a wallet ID
+  const walletIdPattern = /^\d{5}$/;
+  if (walletIdPattern.test(message)) {
+    currentWalletId = message;
+  }
+  
+  // Show loading indicator
+  const loadingMsgId = addBotMessage("Thinking...");
+  
+  // Send message to backend
+  processMessageWithBackend(message, currentWalletId)
+    .then(response => {
+      // Remove loading message
+      removeMessage(loadingMsgId);
+      
+      // Update current wallet ID if we got customer data
+      if (response.customerData) {
+        currentWalletId = response.customerData.walletId;
+      }
+      
+      // Add response to chat
+      addBotMessage(response.response);
+    })
+    .catch(error => {
+      // Remove loading message
+      removeMessage(loadingMsgId);
+      
+      // Add error message
+      addBotMessage("I'm sorry, I encountered an issue processing your request. Please try again or contact customer support.");
+      console.error('Error processing message:', error);
+    });
+}
+
+// Process message using backend API
+async function processMessageWithBackend(message, walletId = null) {
+  try {
+    // Call backend API
+    const response = await fetch(`${API_ENDPOINT}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ message, walletId })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Backend API error: ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Backend API error:', error);
+    
+    // Fallback to local processing if backend is unavailable
+    return {
+      response: `I'm currently having trouble connecting to our servers. Here's what I know about the NDC Campaign:
+
+The NDC Campaign offers increasing cashback rewards based on consecutive months of usage:
+- 1st Month: 1.7% cashback
+- 2nd Consecutive Month: 3.3% cashback
+- 3rd Consecutive Month and beyond: 5% cashback
+
+The maximum transaction value eligible for cashback is RM50 per month.
+
+For personalized information about your status, please try again later or contact customer support.`
+    };
+  }
+}
+
+// Add user message to chat
+function addUserMessage(message) {
+  const messageElement = document.createElement('div');
+  messageElement.className = 'user-message';
+  messageElement.textContent = message;
+  chatbotMessages.appendChild(messageElement);
+  chatbotMessages.scrollTop = chatbotMessages.scrollHeight;
+}
+
+// Add bot message to chat and return message ID
+function addBotMessage(message) {
+  const messageElement = document.createElement('div');
+  messageElement.className = 'bot-message';
+  messageElement.textContent = message;
+  chatbotMessages.appendChild(messageElement);
+  chatbotMessages.scrollTop = chatbotMessages.scrollHeight;
+  
+  // Return a unique ID for this message (for loading indicators)
+  return Date.now().toString();
+}
+
+// Remove a message by ID
+function removeMessage(messageId) {
+  const messages = chatbotMessages.querySelectorAll('.bot-message');
+  // Remove the last "thinking..." message
+  if (messages.length > 0) {
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage.textContent === "Thinking...") {
+      lastMessage.remove();
+    }
+  }
+}
+
+// Export functions for testing
+if (typeof module !== 'undefined') {
+  module.exports = {
+    initChatbot,
+    processMessageWithBackend
+  };
+}
